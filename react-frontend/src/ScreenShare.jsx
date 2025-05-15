@@ -1,119 +1,96 @@
-// ScreenShare.jsx
-
+// ------------------------------------------------------------------
+//  src/ScreenShare.jsx      (debug version – 11 May 2025)
+// ------------------------------------------------------------------
 import { useEffect, useRef, useState } from "react";
 
-/**
- * Hook for the STUDENT side to share entire screen.
- * 
- * @param {Object} options 
- *  - socket: the connected Socket.IO instance 
- *  - roomCode: the code for the exam room
- *  - studentId: unique ID for this student
- * 
- * Returns {
- *   startShare: Function, // call to begin sharing
- *   stopShare: Function,  // call to stop sharing
- *   isSharing: boolean,
- *   errorMessage: string
- * }
- */
+/* ------------------------------------------------------------------ */
+/*  useScreenShareStudent                                              */
+/* ------------------------------------------------------------------ */
 export function useScreenShareStudent({ socket, roomCode, studentId }) {
-  const [isSharing, setIsSharing] = useState(false);
+  const [isSharing, setIsSharing]   = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
-  
-  // We'll store the peer connection and local stream in refs to preserve them across renders
-  const pcRef = useRef(null);
+
+  const pcRef          = useRef(null);
   const localStreamRef = useRef(null);
 
+  /* ---------- listen for ANSWER + ICE from the teacher ------------ */
   useEffect(() => {
     if (!socket) return;
 
-    // Listen for the teacher's answer
-    const handleScreenShareAnswer = async (data) => {
-      // e.g. data = { answer, roomCode, studentId }
-      if (!pcRef.current) return; // means we never set up a PC yet
-      const { answer } = data || {};
-      if (!answer) return; // skip if missing
-
+    const handleScreenShareAnswer = async ({ answer } = {}) => {
+      if (!answer || !pcRef.current) return;
       try {
-        await pcRef.current.setRemoteDescription(answer);
-        // If successful, connection should now be established
+        await pcRef.current.setRemoteDescription(
+          new RTCSessionDescription(answer)
+        );
       } catch (err) {
-        console.error("Error setting teacher answer as remote desc:", err);
-        setErrorMessage("Failed to set teacher answer.");
+        console.error("setRemoteDescription error:", err);
+        setErrorMessage("Failed to establish connection with teacher.");
       }
     };
 
-    // Listen for ICE candidates from teacher
-    const handleIceCandidate = async (data) => {
-      // e.g. data = { candidate, from: "teacher", roomCode, studentId }
-      if (!pcRef.current) return;
-      if (data && data.from === "teacher" && data.candidate) {
-        try {
-          await pcRef.current.addIceCandidate(data.candidate);
-        } catch (err) {
-          console.error("Error adding ICE candidate (teacher->student):", err);
-        }
+    const handleIceCandidate = async ({ candidate, from }) => {
+      if (from !== "teacher" || !candidate || !pcRef.current) return;
+      try {
+        await pcRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+      } catch (err) {
+        console.error("addIceCandidate error (teacher→student):", err);
       }
     };
 
     socket.on("screen_share_answer", handleScreenShareAnswer);
-    socket.on("ice_candidate", handleIceCandidate);
+    socket.on("ice_candidate",       handleIceCandidate);
 
     return () => {
       socket.off("screen_share_answer", handleScreenShareAnswer);
-      socket.off("ice_candidate", handleIceCandidate);
+      socket.off("ice_candidate",       handleIceCandidate);
     };
-  }, [socket]);
+  }, [socket]);           // ← hook runs again when `socket` becomes ready
 
-  // Called to start screen sharing
+  /* -------------------- user clicks “Start Screen Share” ----------- */
   async function startShare() {
+    const sock = socket;                 // local alias for clarity
     setErrorMessage("");
 
-    if (!socket) {
-      setErrorMessage("Socket is not available. Cannot start share.");
+    if (!sock) {
+      setErrorMessage("Socket not ready – join the room first.");
       return;
     }
     if (!roomCode || !studentId) {
-      setErrorMessage("Missing roomCode or studentId. Cannot start share.");
+      setErrorMessage("Missing roomCode or studentId.");
       return;
     }
 
     try {
-      // 1) Ask for screen
+      /* 1. getDisplayMedia */
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: true,
         audio: false
       });
 
-      // Optional check if they truly picked entire screen
-      const label = stream.getVideoTracks()[0]?.label || "";
-      if (!label.toLowerCase().includes("screen")) {
-        // Possibly the user selected a single window or tab
-        setErrorMessage("Please select 'Entire Screen' to proceed.");
-        // Stop that track
+      /* 2. Optional sanity-check */
+      const trackLabel = stream.getVideoTracks()[0]?.label.toLowerCase() || "";
+      if (!trackLabel.includes("screen")) {
+        setErrorMessage("Please share your **entire screen**.");
         stream.getTracks().forEach(t => t.stop());
         return;
       }
 
-      // 2) Create PeerConnection
+      /* 3. Build RTCPeerConnection */
       const pc = new RTCPeerConnection({
-        iceServers: [
-          { urls: "stun:stun.l.google.com:19302" }
-          // If you have a TURN server, add it here
-        ]
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
       });
-      pcRef.current = pc;
+      pcRef.current          = pc;
       localStreamRef.current = stream;
 
-      // 3) Add all tracks from the screen stream
-      stream.getTracks().forEach(track => pc.addTrack(track, stream));
+      /* 4. Add tracks */
+      stream.getTracks().forEach(t => pc.addTrack(t, stream));
 
-      // 4) Handle local ICE
-      pc.onicecandidate = (event) => {
-        if (event.candidate) {
-          socket.emit("ice_candidate", {
-            candidate: event.candidate,
+      /* 5. ICE from student → send to teacher */
+      pc.onicecandidate = e => {
+        if (e.candidate) {
+          sock.emit("ice_candidate", {
+            candidate: e.candidate.toJSON?.() || e.candidate,
             to: "teacher",
             roomCode,
             studentId
@@ -121,104 +98,91 @@ export function useScreenShareStudent({ socket, roomCode, studentId }) {
         }
       };
 
-      // 5) Create offer, set local desc
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
+      /* 6. SDP offer */
+      await pc.setLocalDescription(await pc.createOffer());
 
-      // 6) Emit "screen_share_offer" to the server
-      socket.emit("screen_share_offer", {
-        offer,
+      /* 7.  TEMP DEBUG: emit with console + ACK  ------------------- */
+      console.log("[Student] EMIT screen_share_offer", {
+        offerType: pc.localDescription?.type,
         roomCode,
-        studentId
+        studentId,
+        socketConnected: sock.connected
       });
 
-      setIsSharing(true);
-      setErrorMessage("");
+      sock.emit(
+        "screen_share_offer",
+        {
+          offer: pc.localDescription.toJSON
+            ? pc.localDescription.toJSON()
+            : { sdp: pc.localDescription.sdp, type: pc.localDescription.type },
+          roomCode,
+          studentId
+        },
+        (ack) => console.log("[Student] server ACK:", ack)   // <— debug
+      );
 
+      setIsSharing(true);
     } catch (err) {
       console.error("startShare error:", err);
-      setErrorMessage("Could not start screen share. " + err.message);
+      setErrorMessage(err.message || "Unknown error");
     }
   }
 
-  // Called to stop screen share
+  /* ------------------------- Stop share --------------------------- */
   function stopShare() {
     setIsSharing(false);
     setErrorMessage("");
 
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach(t => t.stop());
-    }
+    localStreamRef.current?.getTracks().forEach(t => t.stop());
     localStreamRef.current = null;
 
-    if (pcRef.current) {
-      pcRef.current.close();
-    }
+    pcRef.current?.close();
     pcRef.current = null;
   }
 
-  return {
-    startShare,
-    stopShare,
-    isSharing,
-    errorMessage
-  };
+  return { startShare, stopShare, isSharing, errorMessage };
 }
 
-/**
- * Hook for the TEACHER side to receive multiple student screens.
- *
- * @param {Object} options
- *  - socket: connected Socket.IO instance
- *  - roomCode: teacher's room code
- * 
- * Returns {
- *   screens: Array< { studentId, stream } >,
- *   removeScreen: (studentId) => void,
- * }
- */
+/* ------------------------------------------------------------------ */
+/*  useScreenShareTeacher                                              */
+/* ------------------------------------------------------------------ */
 export function useScreenShareTeacher({ socket, roomCode }) {
   const [screens, setScreens] = useState([]);
-  // We'll store a map of studentId -> RTCPeerConnection
-  const pcMapRef = useRef({});
+  const pcMapRef = useRef({});        // studentId → RTCPeerConnection
 
   useEffect(() => {
     if (!socket) return;
 
-    // Handler for "screen_share_offer"
-    const handleOffer = async (data) => {
-      // e.g. data = { offer, studentId }
-      if (!data) return;
-      const { offer, studentId } = data;
-      if (!offer || !studentId) {
-        console.warn("Received screen_share_offer but missing offer or studentId:", data);
-        return;
-      }
-      console.log("Received screen_share_offer from student:", studentId);
+    /* global debug – remove later */
+    const logAny = (ev, ...args) =>
+      console.log("[Teacher socket onAny]", ev, args);
+    socket.onAny(logAny);
 
-      // 1) Create new PC for that student
+    /* ---------- student sends OFFER -------------------------------- */
+    const handleOffer = async ({ offer, studentId } = {}) => {
+      if (!offer || !studentId) return;
+
+      if (!roomCode) {
+        console.warn("Offer arrived before roomCode was set – continuing anyway");
+      }
+
       const pc = new RTCPeerConnection({
-        iceServers: [
-          { urls: "stun:stun.l.google.com:19302" }
-        ]
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
       });
       pcMapRef.current[studentId] = pc;
 
-      // 2) When teacher's PC receives a track, store it in state
-      pc.ontrack = (event) => {
-        const [remoteStream] = event.streams;
-        setScreens((prev) => {
-          // remove any existing entry for that student
-          const filtered = prev.filter(s => s.studentId !== studentId);
-          return [...filtered, { studentId, stream: remoteStream }];
-        });
+      pc.ontrack = e => {
+        const [remoteStream] = e.streams;
+        setScreens(prev => [
+          ...prev.filter(s => s.studentId !== studentId),
+          { studentId, stream: remoteStream }
+        ]);
       };
 
-      // 3) Teacher ICE => emit to student
-      pc.onicecandidate = (event) => {
-        if (event.candidate) {
+      pc.onicecandidate = e => {
+        if (e.candidate && roomCode) {
           socket.emit("ice_candidate", {
-            candidate: event.candidate,
+            candidate: e.candidate.toJSON?.() || e.candidate,
             to: "student",
             roomCode,
             studentId
@@ -226,75 +190,57 @@ export function useScreenShareTeacher({ socket, roomCode }) {
         }
       };
 
-      // 4) Set remote desc to student's offer
       try {
-        await pc.setRemoteDescription(offer);
+        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        await pc.setLocalDescription(await pc.createAnswer());
       } catch (err) {
-        console.error("Error setting remote desc to student's offer:", err);
+        console.error("Teacher PC setup error:", err);
         return;
       }
 
-      // 5) Create answer
-      let answer;
-      try {
-        answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-      } catch (err) {
-        console.error("Error creating/setting teacher answer:", err);
-        return;
+      if (roomCode) {
+        socket.emit("screen_share_answer", {
+          answer: pc.localDescription.toJSON
+            ? pc.localDescription.toJSON()
+            : { sdp: pc.localDescription.sdp, type: pc.localDescription.type },
+          roomCode,
+          studentId
+        });
       }
-
-      // 6) Send answer back
-      socket.emit("screen_share_answer", {
-        answer: pc.localDescription,
-        roomCode,
-        studentId
-      });
     };
 
-    // Handler for "ice_candidate"
-    const handleIceCandidate = async (data) => {
-      // e.g. data = { candidate, studentId, from, roomCode }
-      if (!data) return;
-      const { candidate, studentId, from } = data;
-      if (!studentId || from !== "student" || !candidate) return;
-
+    /* ---------- ICE from student ----------------------------------- */
+    const handleIceCandidate = async ({ candidate, studentId, from }) => {
+      if (from !== "student" || !candidate) return;
       const pc = pcMapRef.current[studentId];
-      if (!pc) {
-        console.warn("No pc found for studentId:", studentId, "cannot add ICE");
-        return;
-      }
-      try {
-        await pc.addIceCandidate(candidate);
-      } catch (err) {
-        console.error("Error adding ICE candidate from student:", err);
+      if (pc) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (err) {
+          console.warn("Teacher addIceCandidate error:", err);
+        }
       }
     };
 
     socket.on("screen_share_offer", handleOffer);
-    socket.on("ice_candidate", handleIceCandidate);
+    socket.on("ice_candidate",      handleIceCandidate);
 
     return () => {
+      socket.offAny(logAny);
       socket.off("screen_share_offer", handleOffer);
-      socket.off("ice_candidate", handleIceCandidate);
-      // Optionally close all PCs
-      Object.values(pcMapRef.current).forEach((pc) => pc.close());
+      socket.off("ice_candidate",      handleIceCandidate);
+
+      Object.values(pcMapRef.current).forEach(pc => pc.close());
       pcMapRef.current = {};
     };
-  }, [socket, roomCode]);
+  }, [socket]);    // listeners attach as soon as socket exists
 
-  // If you want to remove a screen manually (e.g. student disconnected)
+  /* manual removal helper for UI */
   function removeScreen(studentId) {
     setScreens(prev => prev.filter(s => s.studentId !== studentId));
-    const pc = pcMapRef.current[studentId];
-    if (pc) {
-      pc.close();
-    }
+    pcMapRef.current[studentId]?.close();
     delete pcMapRef.current[studentId];
   }
 
-  return {
-    screens, 
-    removeScreen
-  };
+  return { screens, removeScreen };
 }

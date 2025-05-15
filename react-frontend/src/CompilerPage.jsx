@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import { io } from "socket.io-client";
 import Editor from "@monaco-editor/react";
+import { BACKEND_URL } from "./backendTest"; 
 
 function mapMonacoLanguage(lang) {
   switch (lang) {
@@ -64,7 +65,7 @@ function App() {
     setUserInput(""); 
 
     if (!socketRef.current) {
-      socketRef.current = io("http://172.22.4.181:5000"); 
+      socketRef.current = io(BACKEND_URL);  
       setupSocketHandlers(socketRef.current);
     }
 
@@ -226,7 +227,7 @@ function App() {
           Send
         </button>
       </div>
-    </div>  
+    </div>   
   );
 }
 

@@ -3,7 +3,8 @@
 import React, { useState, useEffect, useRef } from "react";
 import { io } from "socket.io-client";
 import { useNavigate } from "react-router-dom";
-import Editor from "@monaco-editor/react";
+import Editor from "@monaco-editor/react"; 
+import { BACKEND_URL } from "./backendTest";
 
 // 1) Import our teacher screen-share hook
 import { useScreenShareTeacher } from "./ScreenShare";
@@ -41,47 +42,59 @@ export default function TeacherPage() {
   const [examEnded, setExamEnded]       = useState(false);
   const [roomClosed, setRoomClosed]     = useState(false);
 
+
+  const [examSocket, setExamSocket] = useState(null);   // ADDED
+
+  
+
+  // TeacherPage.jsx  – top of the component
+// (put this right after the 6 React-useState lines)
+console.log("[Teacher-render] examSocket =", examSocket);
+
+
+
   // Our "exam logic" socket for teacher
   const teacherSocketRef = useRef(null);
 
-  useEffect(() => {
+  useEffect(() => { 
     // Connect the "exam logic" socket
-    const examSocket = io("http://172.22.4.181:5000");
-    teacherSocketRef.current = examSocket;
+    const sock = io(BACKEND_URL);
+    teacherSocketRef.current = sock;
+    setExamSocket(sock); 
 
-    examSocket.on("connect", () => {
-      console.log("Teacher exam socket connected, id =", examSocket.id);
+    sock.on("connect", () => {
+      console.log("Teacher exam socket connected, id =", sock.id);
     });
 
     // If "room_created":
-    examSocket.on("room_created", (data) => {
+    sock.on("room_created", (data) => {
       setRoomCode(data.roomCode);
       setRoomCreated(true);
       console.log("Room created with code:", data.roomCode);
     });
 
     // Student joined:
-    examSocket.on("student_joined", (data) => {
+    sock.on("student_joined", (data) => {
       // data = { studentName }
       setParticipants((prev) => [...prev, { name: data.studentName }]);
     });
 
     // If teacher ended exam => just set examEnded in local state
-    examSocket.on("exam_ended", () => {
+    sock.on("exam_ended", () => {
       alert("Exam ended. Students will disconnect in 10s, but you remain here.");
       setExamEnded(true);
     });
 
     // If "room_closed" => forcibly remove teacher as well => navigate to landing
-    examSocket.on("room_closed", () => {
+    sock.on("room_closed", () => {
       alert("Room fully closed. Returning you to the landing page now...");
       setRoomClosed(true);
-      examSocket.disconnect();
+      sock.disconnect();
       navigate("/");
     });
 
     // A new final solution from a student
-    examSocket.on("solution_submitted", (data) => {
+    sock.on("solution_submitted", (data) => {
       // data = { studentName, code, language, taskId? }
       const { studentName, code, language, taskId } = data;
 
@@ -115,14 +128,14 @@ export default function TeacherPage() {
         newArr[idx] = updated;
         return newArr;
       });
-    });
+    }); 
 
-    examSocket.on("disconnect", () => {
+    sock.on("disconnect", () => {
       console.log("Teacher exam socket disconnected.");
     });
 
     return () => {
-      examSocket.disconnect();
+      sock.disconnect();
     };
   }, [navigate]);
 
@@ -228,7 +241,7 @@ export default function TeacherPage() {
     } else {
       setCode("# Example code here...\n");
     }
-  }
+  } 
 
   function startSession() {
     setConsoleOutput("Starting session...\n");
@@ -236,9 +249,9 @@ export default function TeacherPage() {
     setUserInput("");
 
     if (!compilerSocketRef.current) {
-      const compilerSocket = io("http://172.22.4.181:5000");
-      compilerSocketRef.current = compilerSocket; 
-      setupCompilerSocketHandlers(compilerSocket);
+      const compilerSock = io(BACKEND_URL); 
+      compilerSocketRef.current = compilerSock; 
+      setupCompilerSocketHandlers(compilerSock);
     }
 
     compilerSocketRef.current.emit("start_session", {
@@ -291,16 +304,76 @@ export default function TeacherPage() {
     setUserInput("");
   }
 
-  function endCompilerSession() {
+  function endCompilerSession() { 
     setSessionActive(false);
   }
+
+  /////////////////// 
+  function VideoTile({ studentId, stream, onClose }) {
+  const videoRef = useRef(null);
+
+  // attach the MediaStream once we have both <video> & stream
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.srcObject = stream;
+  }, [stream]);
+
+  return (
+    <div style={{
+      position: "relative",
+      width: 260,
+      border: "1px solid #ccc",
+      borderRadius: 6,
+      overflow: "hidden"
+    }}>
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted
+        style={{ width: "100%", height: 150, objectFit: "cover" }}
+      />
+      <div style={{
+        position: "absolute",
+        bottom: 0,
+        left: 0,
+        right: 0,
+        background: "rgba(0,0,0,.55)",
+        color: "#fff",
+        fontSize: 13,
+        padding: "2px 6px",
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center"
+      }}>
+        <span>{studentId}</span>
+        <button
+          onClick={onClose}
+          style={{
+            background: "transparent",
+            border: 0,
+            color: "#fff",
+            cursor: "pointer",
+            fontSize: 15
+          }}
+          title="Remove this screen"
+        >✕</button>
+      </div>
+    </div>
+  );
+}
+
+
+
+
+  ////////////////////////
 
   // ------------------------------------------------------------
   // 3) TEACHER'S SCREEN-SHARE VIEW
   // ------------------------------------------------------------
   // We'll import our teacher hook from "ScreenShare.jsx" above:
   const { screens, removeScreen } = useScreenShareTeacher({
-    socket: teacherSocketRef.current,  // the exam socket
+    //socketRef: teacherSocketRef,  // the exam socket
+    socket:    examSocket,
     roomCode
   });
 
@@ -568,4 +641,5 @@ export default function TeacherPage() {
       </div>
     </div>
   );
-}
+}  
+

@@ -1,13 +1,17 @@
-/* -------------------------------------
+/* ------------------------------------------------
    src/StudentPage.jsx
-   ------------------------------------- */
+   (Updated to include full screen sharing feature)
+   ------------------------------------------------*/
 
    import React, { useState, useRef, useEffect } from "react";
    import { io } from "socket.io-client";
-   import { useNavigate } from "react-router-dom";  // <-- so we can navigate to landing
+   import { useNavigate } from "react-router-dom"; 
    import Editor from "@monaco-editor/react";
+   import { BACKEND_URL } from "./backendTest";
    
-   // 1) Keep the same mapMonacoLanguage
+   // 1) Import our student screen-share hook
+   import { useScreenShareStudent } from "./ScreenShare";
+   
    function mapMonacoLanguage(lang) {
      switch (lang) {
        case "python": return "python";
@@ -21,13 +25,17 @@
      }
    }
    
+   // Optional helper to generate a random student ID
+   function generateRandomId() {
+     return "stud-" + Math.floor(Math.random() * 100000);
+   }
+   
    export default function StudentPage() {
      const navigate = useNavigate();  // For redirecting to landing
-   
+     
      /* ------------------------------------------------------
       *  1) Exam / Room-Joining State
-      * ------------------------------------------------------
-      */
+      * ------------------------------------------------------ */
      const [roomCode, setRoomCode]       = useState("");
      const [studentName, setStudentName] = useState("");
      const [joined, setJoined]           = useState(false);
@@ -46,22 +54,31 @@
    
      // If the teacher ended the exam => 10s countdown => auto-navigate to landing
      const [examEnded, setExamEnded]       = useState(false);
-     const [disconnectTimer, setDisconnectTimer] = useState(null);
+     const [disconnectTimer, setDisconnectTimer] = useState(null); 
+     
+     const [examSocket, setExamSocket]   = useState(null);  //ADDED
+   
+     // We'll create a simple "studentId" to identify ourselves to the teacher
+     // in screen sharing. In a real app, you might map this to your existing user data.
+     const [studentId] = useState(() => generateRandomId());
    
      /* ------------------------------------------------------
       *  2) On mount, connect the exam logic socket
-      * ------------------------------------------------------
-      */
+      * ------------------------------------------------------ */
      useEffect(() => {
-       const examSocket = io("http://192.168.209.1:5000");
-       examSocketRef.current = examSocket;
+       // Build a URL the browser can really reach
+       const sock = io(BACKEND_URL);
+
+       examSocketRef.current = sock;
+
+       setExamSocket(sock);  //ADDED
    
-       examSocket.on("connect", () => {
-         console.log("Student exam socket connected, id:", examSocket.id);
+       sock.on("connect", () => {
+         console.log("Student exam socket connected, id:", sock.id);
        });
    
        // If teacher sends a new task
-       examSocket.on("new_task", (data) => {
+       sock.on("new_task", (data) => {
          setTaskText(data.taskText || "");
          // reset local states
          setHasSubmitted(false);
@@ -72,13 +89,12 @@
          } else {
            setTimeLeft(null);
          }
-         // if exam was ended before, this might re-open, 
-         // but that depends on your server logic
+         // if exam was ended before, this might re-open
          setExamEnded(false);
        });
    
-       // If teacher ends exam => 10s countdown, forcibly disconnect => navigate("/")
-       examSocket.on("exam_ended", () => {
+       // If teacher ends exam => 10s countdown => forcibly disconnect => navigate("/")
+       sock.on("exam_ended", () => {
          alert("Exam ended. You’ll be disconnected in 10 seconds.");
          setExamEnded(true);
          let secs = 10;
@@ -89,7 +105,7 @@
            if (secs <= 0) {
              clearInterval(t);
              // forcibly disconnect from the exam socket
-             examSocket.disconnect();
+             sock.disconnect();
              // now navigate back to the main landing page
              navigate("/");
            }
@@ -97,26 +113,23 @@
        });
    
        // If the teacher or server forcibly closes the room
-       examSocket.on("room_closed", () => {
+       sock.on("room_closed", () => {
          alert("Room fully closed. Disconnecting now...");
-         examSocket.disconnect();
+         sock.disconnect();
          navigate("/");
        });
    
        // If there's a session error from the backend
-       examSocket.on("session_error", (data) => {
-         // If it's "You already submitted." and we triggered it automatically, 
-         // we can skip showing an alert. Otherwise, show it.
+       sock.on("session_error", (data) => {
          if (data.error === "You already submitted.") {
            console.log("Skipping 'already submitted' alert. " + data.error);
-           // or show a friendlier UI message if you want
          } else {
            alert("Session error: " + data.error);
          }
        });
    
        return () => {
-         examSocket.disconnect();
+         sock.disconnect();
        };
      }, [navigate]);
    
@@ -127,11 +140,14 @@
          alert("Please enter a Room Code and Your Name.");
          return;
        }
+       // Let the server know we're joining
        examSocketRef.current.emit("join_room", {
          roomCode,
          name: studentName,
+         // If you want to store studentId on the server, you can pass it here
+         studentId
        });
-       setJoined(true);
+       setJoined(true); 
      }
    
      /* ------------------------------------------------------
@@ -170,8 +186,7 @@
    
      /* ------------------------------------------------------
       *  4) Ephemeral Compiler Logic
-      * ------------------------------------------------------
-      */
+      * ------------------------------------------------------ */
      const [language, setLanguage]          = useState("python");
      const [code, setCode]                  = useState("# Example code here...\n");
      const [consoleOutput, setConsoleOutput]= useState("");
@@ -220,13 +235,15 @@
        setUserInput("");
    
        if (!compilerSocketRef.current) {
-         const compSock = io("http://192.168.209.1:5000");
+         
+         const compSock = io(BACKEND_URL);
+
          compilerSocketRef.current = compSock;
          setupCompilerHandlers(compSock);
        }
    
        compilerSocketRef.current.emit("start_session", {
-         code: code.trim(),  
+         code: code.trim(),
          language,
        });
      }
@@ -301,8 +318,6 @@
        }
    
        // if exam ended => skip
-       // (Though you might just let them see an error. 
-       //  But we can skip if we want no new submissions.)
        if (examEnded && !autoFromTime) {
          alert("Exam ended. No more submissions allowed.");
          return;
@@ -315,9 +330,7 @@
          roomCode,
          name: studentName,
          code: finalCode,
-         language,
-         // if you have "currentTaskId", pass it here
-         // taskId: currentTaskId
+         language
        });
    
        setHasSubmitted(true);
@@ -328,9 +341,27 @@
      }
    
      /* ------------------------------------------------------
-      *  6) Render Student UI
+      *  6) FULL SCREEN SHARING (STUDENT) INTEGRATION
       * ------------------------------------------------------
       */
+     // Use the custom hook from ScreenShare.jsx,
+     // passing in our examSocketRef, roomCode, and the studentId
+     const {
+       startShare,
+       stopShare,
+       isSharing,
+       errorMessage
+     } = useScreenShareStudent({
+       //socketRef: examSocketRef,  // the exam socket
+       //socket:    examSocketRef.current,
+       socket:    examSocket,
+       roomCode, 
+       studentId 
+     }); 
+   
+     /* ------------------------------------------------------
+      *  7) Render Student UI
+      * ------------------------------------------------------ */
      if (!joined) {
        // Step 1: Show a form to join
        return (
@@ -489,18 +520,38 @@
    
          <hr />
    
+         {/* Full Screen Sharing Section */}
+         <h3>Share Entire Screen</h3>
+         {!isSharing && (
+           <button onClick={startShare} style={{ marginRight: "10px" }}>
+             Start Screen Share
+           </button>
+         )}
+         {isSharing && (
+           <button onClick={stopShare} style={{ marginRight: "10px" }}>
+             Stop Screen Share
+           </button>
+         )}
+         {errorMessage && (
+           <p style={{ color: "red", fontWeight: "bold" }}>
+             {errorMessage}
+           </p>
+         )}
+   
+         <hr />
+   
          {/* Final Submit */}
          <button
            onClick={() => handleCompleteSolution(false)}
            disabled={examEnded}
            style={{
-             marginTop: "20px",
+             marginTop: "20px", 
              fontWeight: "bold",
              background: "lightgreen",
-           }}
+           }} 
          >
            Complete / Submit Final Code
          </button>
-       </div> 
+       </div>
      );
    }
