@@ -1,4 +1,5 @@
 # LCE — Live Coding Environment
 
-An interactive **online coding and examination environment** designed around real-time programming workflows. LCE provides dedicated teacher and student interfaces together with an integrated code editor, terminal interaction, screen sharing, and live communication capabilities.
+A browser-based environment for **real-time coding, execution, and supervised collaboration**. LCE combines an integrated code editor, interactive terminal, live communication, and screen-sharing capabilities within a unified development workspace.
 
+Built with React and modern web technologies, the platform explores how collaborative programming workflows can be coordinated efficiently in a shared online environment.
